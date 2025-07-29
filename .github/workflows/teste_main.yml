@@ -1,0 +1,152 @@
+name: CI Pipeline da WebAPI em C#
+
+# Define os gatilhos para a execução do workflow
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+# Define variáveis de ambiente globais
+env:
+  DOTNET_VERSION: '8.0.x' # <-- IMPORTANTE: Ajuste para a versão do .NET do seu projeto
+  PROJECT_PATH: 'src/MyApiProject/MyApiProject.csproj' # <-- IMPORTANTE: Ajuste para o caminho do seu projeto principal
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: 1. Checkout do código
+      uses: actions/checkout@v4
+
+    - name: 2. Configurar o ambiente .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: 3. Restaurar dependências (dotnet restore)
+      run: dotnet restore ${{ env.PROJECT_PATH }}
+
+    - name: 4. Compilar o projeto (dotnet build)
+      run: dotnet build ${{ env.PROJECT_PATH }} --no-restore --configuration Release
+
+  unit-test:
+    runs-on: ubuntu-latest
+    needs: build # Depende da finalização do job 'build'
+    steps:
+    - name: 1. Checkout do código
+      uses: actions/checkout@v4
+
+    - name: 2. Configurar o ambiente .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: 3. Executar Testes de Unidade
+      run: dotnet test --filter "TestCategory=Unit" --no-build --configuration Release --verbosity normal
+      # Assumindo que você usa [TestCategory("Unit")] para separar os testes
+
+  # JOB DE QUALIDADE ADICIONADO
+  codeql:
+    runs-on: ubuntu-latest
+    needs: build # Depende da finalização do job 'build'
+    permissions:
+      security-events: write # Permissão necessária para o CodeQL enviar os resultados
+    steps:
+      - name: 1. Checkout do código
+        uses: actions/checkout@v4
+
+      - name: 2. Inicializar o CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: 'csharp'
+
+      - name: 3. Autobuild (necessário para o CodeQL analisar o código compilado)
+        uses: github/codeql-action/autobuild@v3
+
+      - name: 4. Executar a análise do CodeQL
+        uses: github/codeql-action/analyze@v3
+
+  # JOB DE QUALIDADE ADICIONADO
+  vulnerability-scan:
+    runs-on: ubuntu-latest
+    needs: build # Depende da finalização do job 'build'
+    steps:
+    - name: 1. Checkout do código
+      uses: actions/checkout@v4
+
+    - name: 2. Executar scan de vulnerabilidades com Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        scan-type: 'fs'
+        scan-ref: '.'
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: true
+        severity: 'CRITICAL,HIGH' # Falha o pipeline se encontrar vulnerabilidades críticas ou altas
+
+  integration-test:
+    runs-on: ubuntu-latest
+    needs: build # Depende da finalização do job 'build'
+    steps:
+    - name: 1. Checkout do código
+      uses: actions/checkout@v4
+
+    - name: 2. Configurar o ambiente .NET
+      uses: actions/setup-dotnet@v4
+      with:
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+
+    - name: 3. Subir os contêineres com Docker Compose
+      run: docker-compose -f docker-compose.yml -f docker-compose.ci.yml up -d
+      # Usando um arquivo de override para CI, se necessário
+
+    - name: 4. Aguardar a saúde dos serviços
+      run: |
+        echo "Aguardando 20 segundos para os contêineres estabilizarem..."
+        sleep 20
+        # Em um cenário real, use um script que verifica o endpoint de health check da sua API em loop
+
+    - name: 5. Executar Testes de Integração
+      run: dotnet test --filter "TestCategory=Integration" --no-build --configuration Release --verbosity normal
+      # Assumindo que você usa [TestCategory("Integration")] para separar os testes
+
+    - name: 6. Parar os contêineres (executa sempre)
+      if: always()
+      run: docker-compose -f docker-compose.yml -f docker-compose.ci.yml down
+
+  stress-test:
+    runs-on: ubuntu-latest
+    # Este job só roda se todos os jobs anteriores forem bem-sucedidos
+    needs: [unit-test, codeql, vulnerability-scan, integration-test]
+    steps:
+    - name: 1. Checkout do código
+      uses: actions/checkout@v4
+
+    - name: 2. Construir a imagem Docker da API
+      run: docker build -t my-webapi-image -f ${{ env.PROJECT_PATH }}/Dockerfile .
+
+    - name: 3. Subir a API para o teste de carga
+      run: docker run -d --rm -p 8080:8080 --name my-webapi-container my-webapi-image
+
+    - name: 4. Configurar o ambiente k6
+      uses: grafana/k6-action@v0.3.1
+
+    - name: 5. Executar os testes de carga com k6
+      run: |
+        # Aguarda a API ficar pronta antes de iniciar o teste
+        sleep 10
+        k6 run src/k6-tests/script.js
+        # <-- IMPORTANTE: Ajuste o caminho para o seu script de teste k6
+
+### **Como Adaptar Este YAML para o Seu Projeto**
+
+1.  **`DOTNET_VERSION`**: Na seção `env`, altere o valor para a versão do .NET que seu projeto utiliza (ex: `'7.0.x'`, `'6.0.x'`).
+2.  **`PROJECT_PATH`**: Na seção `env`, ajuste o caminho para o arquivo `.csproj` da sua Web API.
+3.  **Filtro dos Testes**: Os comandos `dotnet test` usam `--filter "TestCategory=..."`. Isso assume que você está usando atributos como `[TestCategory("Unit")]` e `[TestCategory("Integration")]` em suas classes de teste. Se sua separação for por projeto, você deverá mudar o comando para algo como `dotnet test src/MyApi.UnitTests/MyApi.UnitTests.csproj`.
+4.  **`docker-compose`**: O job `integration-test` assume que você pode ter um arquivo `docker-compose.ci.yml` que sobrescreve configurações do `docker-compose.yml` principal (uma prática comum para, por exemplo, não expor portas no host da CI). Se você usa apenas um arquivo, remova a referência ao segundo.
+5.  **Health Check**: A etapa "Aguardar a saúde dos serviços" usa um `sleep` simples. Esta é a abordagem mais fácil, mas não a mais robusta. O ideal é criar um pequeno script que tente acessar um endpoint `/health` da sua API em um loop até receber uma resposta `200 OK`.
+6.  **Caminho do Script k6**: No job `stress-test`, atualize o caminho `src/k6-tests/script.js` para o local correto do seu script de teste k6.
+7.  **Dockerfile**: O job `stress-test` assume que existe um `Dockerfile` na pasta do seu projeto de API para poder construir e executar a imagem.
+
+Com este arquivo YAML, seu projeto terá um pipeline de integração contínua completo, automatizado e que cobre diversas facetas da qualidade de software, da funcionalidade à segurança e performance.
