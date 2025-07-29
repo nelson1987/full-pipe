@@ -1,0 +1,18 @@
+version: '3.8'
+
+services:
+  localstack:
+    image: localstack/localstack:latest
+    container_name: ${LOCALSTACK_CONTAINER_NAME}
+    ports:
+      - "${LOCALSTACK_PORT}:4566"
+    environment:
+      - SERVICES=${LOCALSTACK_SERVICES}
+      - DEFAULT_REGION=${LOCALSTACK_DEFAULT_REGION}
+      - EDGE_PORT=${LOCALSTACK_PORT}
+      - DATA_DIR=${LOCALSTACK_DATA_DIR}
+      - LOCALSTACK_S3_BUCKET=${LOCALSTACK_S3_BUCKET}
+    volumes:
+      - "${LOCALSTACK_DATA_DIR}:/tmp/localstack"
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - ./localstack-init.sh:/docker-entrypoint-initaws.d/localstack-init.sh
