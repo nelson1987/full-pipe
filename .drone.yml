@@ -1,0 +1,27 @@
+kind: pipeline
+type: docker
+name: default
+
+steps:
+  - name: restore
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    commands:
+      - dotnet restore
+
+  - name: build
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    commands:
+      - dotnet build --no-restore
+
+  - name: test
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    commands:
+      - dotnet test --no-build
+
+  - name: deploy
+    image: mcr.microsoft.com/dotnet/sdk:8.0
+    commands:
+      - echo "kubectl apply -f deployment.yaml"
+    when:
+      event:
+        - promote
